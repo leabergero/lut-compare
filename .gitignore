@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# artefactos de compilacion del instalador
+build/
+dist/
+*.egg-info/
+
+# presets personales del usuario (los .xmp de Lightroom pueden ser
+# contenido comercial de terceros y no deben redistribuirse)
+presets/*.xmp
+
+# salidas y estado local
+editadas/
+.lut_compare.json
