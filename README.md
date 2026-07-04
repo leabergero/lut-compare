@@ -35,9 +35,16 @@ Diseñada para sentirse fluida incluso en máquinas modestas:
 
 ## Instalación
 
-Requiere **Python 3.9 o superior** ([python.org](https://www.python.org/downloads/)).
+### Windows — instalador (recomendado)
 
-### Windows
+Descargá el `.msi` desde [Releases](https://github.com/leabergero/lut-compare/releases)
+y hacé doble clic. No requiere Python ni permisos de administrador; crea el
+acceso directo "LUT Compare" en el menú Inicio.
+
+Para instalar desde el código fuente, requiere **Python 3.9 o superior**
+([python.org](https://www.python.org/downloads/)):
+
+### Windows — desde el código
 
 ```bat
 git clone https://github.com/leabergero/lut-compare.git
