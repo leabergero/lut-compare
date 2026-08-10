@@ -6,16 +6,16 @@ Aplicación de escritorio para **comparar una foto con dos presets de color a la
 
 ## Qué hace
 
-- **Vista grande fundida por tercios**: la misma foto continua, con el tercio izquierdo original, el centro con el preset 1 y la derecha con el preset 2, fundiéndose gradualmente de un look al otro (ancho del fundido ajustable, u opción de corte neto).
+- **Vista grande fundida por tercios**: la misma foto continua, con el tercio izquierdo original, el centro con el preset 1 y la derecha con el preset 2, fundiéndose gradualmente de un look al otro (ancho del fundido ajustable, u opción de corte neto). Un selector arriba deja ver solo uno de los tres agrandado, en vez del fundido, para juzgar mejor el resultado final.
 - **Tres paneles individuales** debajo: original + los dos presets, cada uno con su desplegable, su control de intensidad (0–100 %) y su botón de guardar.
 - **Navegador de carpeta**: elegís una carpeta y la tira de miniaturas muestra todas las fotos; pasás con clic, flechas del teclado o la rueda del mouse.
-- **Dos formatos de preset** en la carpeta `presets/` de la app:
+- **Dos formatos de preset**, leídos recursivamente (con subcarpetas) desde una carpeta configurable (botones "Abrir carpeta" / "Cambiar carpeta..."):
   - `.xmp` — presets de Lightroom / Adobe Camera Raw (balance de blancos, exposición, contraste, altas luces/sombras, curvas de tono, vibrance, mezcla HSL, calibración, viñeta y grano). El render es una aproximación al de Adobe: muy cercana, no idéntica píxel a píxel.
   - `.cube` — LUTs 3D estándar (Resolve, Premiere, etc.), con interpolación trilineal.
-  Tirá archivos nuevos en la carpeta y tocá "Releer presets": aparecen en los desplegables.
-- **Guardado no destructivo**: cada guardado procesa la foto a resolución completa y la deja en una subcarpeta `editadas/` dentro de tu carpeta de fotos, como `nombre_preset_timestamp.jpg`, conservando los metadatos EXIF. Los originales nunca se tocan.
+  Tirá archivos nuevos en la carpeta (o en subcarpetas, que aparecen agrupadas con subtítulo) y tocá "Releer presets". Marcá presets favoritos con la estrella del desplegable: quedan siempre arriba de todo.
+- **Guardado no destructivo**: cada guardado procesa la foto a resolución completa y la deja en una subcarpeta `editadas/` dentro de tu carpeta de fotos, como `nombre_preset_timestamp.jpg`, conservando los metadatos EXIF. Los originales nunca se tocan. "Guardar fundido" exporta la vista grande tal cual se ve, con las 2 LUTs fundidas.
 - **Aplicar a todas**: procesa la carpeta entera con el preset elegido, en paralelo por núcleos.
-- **Zoom 100 % sincronizado**: clic sobre un panel amplía al 100 % y los tres paneles se desplazan juntos, para comparar detalle fino.
+- **Zoom continuo sincronizado**: rueda del mouse sobre cualquiera de las 4 vistas (los 3 paneles + la grande) para acercarte al detalle, con paneo por arrastre; las 4 se mueven juntas.
 - **Favoritas**: marcá fotos con `F` y filtrá la tira para ver solo esas.
 - Lee JPG, PNG, TIFF, WebP, BMP, HEIC/HEIF (fotos de iPhone directas) y
   **RAW de camara** (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2, PEF y mas, via
@@ -35,11 +35,20 @@ Diseñada para sentirse fluida incluso en máquinas modestas:
 
 ## Instalación
 
-### Windows — instalador (recomendado)
+### Instaladores (recomendado)
 
-Descargá el `.msi` desde [Releases](https://github.com/leabergero/lut-compare/releases)
-y hacé doble clic. No requiere Python ni permisos de administrador; crea el
-acceso directo "LUT Compare" en el menú Inicio.
+Los `.deb` (Linux), `.msi` (Windows) y `.pkg` (macOS) están en
+[`installers/`](installers/). El venv con las dependencias se crea en el
+primer arranque (necesita internet esa única vez); no requieren permisos
+de administrador (Linux instala en `/opt`, Windows y macOS por-usuario).
+
+```bash
+sudo apt install ./installers/lut-compare_*_all.deb   # Linux
+```
+
+En Windows, doble clic en el `.msi`: crea el acceso directo "LUT Compare"
+en el menú Inicio. En macOS, doble clic en el `.pkg`: instala
+"LUT Compare.app" en Aplicaciones.
 
 Para instalar desde el código fuente, requiere **Python 3.9 o superior**
 ([python.org](https://www.python.org/downloads/)):
@@ -95,12 +104,13 @@ python app.py
 | `←` / `→` | Foto anterior / siguiente |
 | `1` / `2` / `3` | Guardar original / panel 2 / panel 3 |
 | `F` | Marcar/desmarcar favorita |
-| Clic en panel | Zoom 100 % sincronizado (arrastrar para mover) |
+| Rueda del mouse en un panel | Zoom continuo sincronizado (arrastrar para mover) |
+| Clic en panel | Salta a 3× / vuelve a ajustar |
 | Rueda del mouse en la tira | Desplazarse por las miniaturas |
 
 ## Presets
 
-La app busca `.xmp` y `.cube` en la carpeta `presets/` junto a `app.py`. El repo incluye una LUT de ejemplo (`Calido suave.cube`); tus presets personales de Lightroom no se distribuyen con el repo — exportalos desde Lightroom (clic derecho sobre el preset → *Export*) y copialos ahí.
+La app busca `.xmp` y `.cube` en la carpeta `presets/` junto a `app.py` (y en sus subcarpetas, que aparecen agrupadas por nombre en el desplegable) — o en la que elijas con "Cambiar carpeta...". El repo incluye una LUT de ejemplo (`Calido suave.cube`); tus presets personales de Lightroom no se distribuyen con el repo — exportalos desde Lightroom (clic derecho sobre el preset → *Export*) y copialos ahí.
 
 ## Estructura
 
@@ -108,9 +118,11 @@ La app busca `.xmp` y `.cube` en la carpeta `presets/` junto a `app.py`. El repo
 lut-compare/
 ├── app.py             # interfaz (PySide6): paneles, fundido, navegador, guardado
 ├── preset_engine.py   # motor: parser .xmp/.cube, horneado a LUT 3D, render numpy
-├── presets/           # tus .xmp y .cube van acá
+├── presets/           # tus .xmp y .cube van acá (con subcarpetas si querés)
 ├── requirements.txt
-└── LUT Compare.bat    # lanzador para Windows
+├── LUT Compare.bat    # lanzador para Windows (desde el código)
+├── installers/        # .deb / .msi / .pkg ya generados
+└── packaging/         # scripts que generan los instaladores (ver packaging/README.md)
 ```
 
 ## Limitaciones conocidas

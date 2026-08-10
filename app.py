@@ -33,11 +33,16 @@ try:
 except ImportError:
     rawpy = None
 
-from PySide6.QtCore import QObject, QRect, QSettings, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QImage, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtCore import (
+    QEvent, QObject, QRectF, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal,
+)
+from PySide6.QtGui import (
+    QDesktopServices, QImage, QKeySequence, QPainter, QPixmap, QShortcut,
+    QStandardItem, QStandardItemModel,
+)
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QListView, QMainWindow, QMessageBox,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QListView, QMainWindow, QMessageBox,
     QProgressDialog, QPushButton, QSlider, QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -77,6 +82,9 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp",
 PREVIEW_MAX = 1300
 QUICK_MAX = 480
 THUMB_H = 64
+STAR_ON, STAR_OFF = "★", "☆"
+BIG_FUNDIDO_ID = 3  # id del boton "Fundido" en big_mode_group (-1 esta
+                    # reservado por Qt como "sin id" y QButtonGroup lo ignora)
 
 
 def load_image(path, max_side=None):
@@ -184,6 +192,20 @@ def save_render(arr_u8, dest, exif):
     if exif:
         kwargs["exif"] = exif
     im.save(dest, "JPEG", **kwargs)
+
+
+def render_full(photo, presets, amounts, fade):
+    """Original + los 2 presets a resolucion completa, y el fundido en tercios
+    de esos tres paneles. Comparte codigo entre el zoom 100% y el guardado de
+    la vista fundida (misma composicion, con o sin persistirla a disco)."""
+    full, exif = load_image(photo)
+    panels = [to_u8(full)]
+    for preset, amount in zip(presets, amounts):
+        render = preset.apply(full) if preset else full
+        panels.append(to_u8(blend(full, render, amount)))
+    del full
+    big = blend_thirds_u8(panels, fade)
+    return panels, big, exif
 
 
 # ---------------------------------------------------------------- workers
@@ -356,16 +378,15 @@ class FullResWorker(QThread):
                 save_render(to_u8(render), dest, exif)
                 self.finished_ok.emit({"kind": "save", "dest": str(dest)})
             elif t["kind"] == "zoom":
-                full, _ = load_image(t["photo"])
-                panels = [to_u8(full)]
-                for preset, amount in zip(t["presets"], t["amounts"]):
-                    render = preset.apply(full) if preset else full
-                    panels.append(to_u8(blend(full, render, amount)))
-                del full
-                big = blend_thirds_u8(panels, t["fade"])
+                panels, big, _ = render_full(t["photo"], t["presets"], t["amounts"], t["fade"])
                 self.finished_ok.emit({"kind": "zoom", "photo": t["photo"],
                                        "key": t["key"], "panels": panels,
                                        "big": big})
+            elif t["kind"] == "blend_save":
+                _, big, exif = render_full(t["photo"], t["presets"], t["amounts"], t["fade"])
+                dest = out_path(t["folder"], t["photo"], t["label"])
+                save_render(big, dest, exif)
+                self.finished_ok.emit({"kind": "blend_save", "dest": str(dest)})
         except Exception:
             self.failed.emit(traceback.format_exc(limit=3))
 
@@ -403,17 +424,21 @@ class ThumbWorker(QThread):
 
 
 class ViewState(QObject):
+    """Zoom/paneo continuos, compartidos por las 4 vistas (3 paneles + grande)."""
+
     changed = Signal()
+    MIN_ZOOM = 1.0
+    MAX_ZOOM = 8.0
 
     def __init__(self):
         super().__init__()
-        self.zoomed = False
+        self.zoom = self.MIN_ZOOM
         self.cx = 0.5
         self.cy = 0.5
 
-    def set(self, zoomed=None, cx=None, cy=None):
-        if zoomed is not None:
-            self.zoomed = zoomed
+    def set(self, zoom=None, cx=None, cy=None):
+        if zoom is not None:
+            self.zoom = min(max(zoom, self.MIN_ZOOM), self.MAX_ZOOM)
         if cx is not None:
             self.cx = min(max(cx, 0.0), 1.0)
         if cy is not None:
@@ -422,15 +447,18 @@ class ViewState(QObject):
 
 
 class SyncView(QWidget):
-    """Panel de imagen con zoom 100% sincronizado entre los tres paneles."""
+    """Panel de imagen con zoom continuo (rueda del mouse) y paneo (arrastre)
+    sincronizados entre las 4 vistas a traves del ViewState compartido."""
 
     zoom_requested = Signal()
+    CLICK_ZOOM = 3.0    # nivel al que salta un click simple (sin arrastre)
+    WHEEL_STEP = 1.0015  # multiplicador de zoom por unidad de angleDelta
 
     def __init__(self, state):
         super().__init__()
         self.state = state
         self.preview = None      # QImage ajustada
-        self.full = None         # QImage resolucion completa (para zoom)
+        self.full = None         # QImage resolucion completa (para el detalle)
         self.setMinimumHeight(140)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setCursor(Qt.PointingHandCursor)
@@ -446,60 +474,107 @@ class SyncView(QWidget):
         self.full = qimg
         self.update()
 
+    def _image(self):
+        return self.full if self.full is not None else self.preview
+
+    @staticmethod
+    def _window(widget_dim, array_dim, scale, center):
+        """Ventana visible en pixeles del array + rect destino en el widget
+        (con bandas si la imagen no llena ese eje a este zoom)."""
+        visible = min(array_dim, widget_dim / scale)
+        start = min(max(center * array_dim - visible / 2, 0.0), array_dim - visible)
+        dest_len = min(widget_dim, array_dim * scale)
+        dest_start = (widget_dim - dest_len) / 2
+        return start, visible, dest_start, dest_len
+
+    def _geometry(self):
+        """(rect origen en el array actual, rect destino en el widget), o
+        None si todavia no hay imagen. Una sola formula para "ajustada"
+        (zoom=1) y cualquier nivel de zoom/paneo: no hace falta un camino
+        de codigo aparte para cada caso."""
+        img = self._image()
+        if img is None or not self.width() or not self.height():
+            return None
+        fit_scale = min(self.width() / img.width(), self.height() / img.height())
+        scale = fit_scale * self.state.zoom
+        sx, sw, dx, dw = self._window(self.width(), img.width(), scale, self.state.cx)
+        sy, sh, dy, dh = self._window(self.height(), img.height(), scale, self.state.cy)
+        return QRectF(sx, sy, sw, sh), QRectF(dx, dy, dw, dh)
+
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.fillRect(self.rect(), Qt.transparent)
-        if self.preview is None:
+        geo = self._geometry()
+        if geo is None:
             p.setPen(Qt.gray)
             p.drawText(self.rect(), Qt.AlignCenter, "sin imagen")
             return
-        if not self.state.zoomed:
-            img = self.preview
-            scale = min(self.width() / img.width(), self.height() / img.height())
-            w, h = int(img.width() * scale), int(img.height() * scale)
-            target = QRect((self.width() - w) // 2, (self.height() - h) // 2, w, h)
-            p.drawImage(target, img)
-        else:
-            img = self.full if self.full is not None else self.preview
-            ratio = 1.0 if self.full is not None else 0.35
-            vw, vh = int(self.width() / ratio), int(self.height() / ratio)
-            sx = int(self.state.cx * img.width() - vw / 2)
-            sy = int(self.state.cy * img.height() - vh / 2)
-            sx = max(0, min(sx, img.width() - vw))
-            sy = max(0, min(sy, img.height() - vh))
-            src = QRect(sx, sy, min(vw, img.width()), min(vh, img.height()))
-            p.drawImage(self.rect(), img, src)
-            if self.full is None:
-                p.setPen(Qt.white)
-                p.drawText(self.rect().adjusted(6, 6, -6, -6),
-                           Qt.AlignTop | Qt.AlignLeft, "procesando 100%...")
+        source, dest = geo
+        p.drawImage(dest, self._image(), source)
+        if self.full is None and self.state.zoom > 1.0:
+            p.setPen(Qt.white)
+            p.drawText(self.rect().adjusted(6, 6, -6, -6),
+                       Qt.AlignTop | Qt.AlignLeft, "cargando resolucion completa...")
+
+    def wheelEvent(self, event):
+        geo = self._geometry()
+        if geo is None:
+            return
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if not delta:
+            return
+        source, dest = geo
+        pos = event.position()
+        fx = min(max((pos.x() - dest.x()) / dest.width(), 0.0), 1.0) if dest.width() else 0.5
+        fy = min(max((pos.y() - dest.y()) / dest.height(), 0.0), 1.0) if dest.height() else 0.5
+        image_x = source.x() + fx * source.width()
+        image_y = source.y() + fy * source.height()
+
+        img = self._image()
+        new_zoom = self.state.zoom * (self.WHEEL_STEP ** delta)
+        new_zoom = min(max(new_zoom, ViewState.MIN_ZOOM), ViewState.MAX_ZOOM)
+        fit_scale = min(self.width() / img.width(), self.height() / img.height())
+        new_scale = fit_scale * new_zoom
+        new_vw = min(img.width(), self.width() / new_scale)
+        new_vh = min(img.height(), self.height() / new_scale)
+        # mantiene el punto bajo el cursor fijo en pantalla al cambiar el zoom
+        new_cx = (image_x - fx * new_vw + new_vw / 2) / img.width()
+        new_cy = (image_y - fy * new_vh + new_vh / 2) / img.height()
+        self.state.set(zoom=new_zoom, cx=new_cx, cy=new_cy)
+        if new_zoom > 1.0:
+            self.zoom_requested.emit()
+        event.accept()
 
     def mousePressEvent(self, event):
         self._press = event.position()
         self._dragged = False
 
     def mouseMoveEvent(self, event):
-        if self._press is None or not self.state.zoomed:
+        if self._press is None or self.state.zoom <= 1.0:
             return
         delta = event.position() - self._press
         if delta.manhattanLength() > 3:
             self._dragged = True
-            img = self.full if self.full is not None else self.preview
-            if img is None:
+            geo = self._geometry()
+            img = self._image()
+            if geo is None or img is None:
                 return
+            source, dest = geo
+            dx_img = delta.x() * (source.width() / max(dest.width(), 1.0))
+            dy_img = delta.y() * (source.height() / max(dest.height(), 1.0))
             self.state.set(
-                cx=self.state.cx - delta.x() / img.width(),
-                cy=self.state.cy - delta.y() / img.height(),
+                cx=self.state.cx - dx_img / img.width(),
+                cy=self.state.cy - dy_img / img.height(),
             )
             self._press = event.position()
 
     def mouseReleaseEvent(self, _event):
         if not self._dragged:
-            if self.state.zoomed:
-                self.state.set(zoomed=False)
+            if self.state.zoom > 1.0:
+                self.state.set(zoom=1.0)
             else:
-                self.state.set(zoomed=True, cx=0.5, cy=0.5)
+                self.state.set(zoom=self.CLICK_ZOOM, cx=0.5, cy=0.5)
                 self.zoom_requested.emit()
         self._press = None
 
@@ -514,6 +589,19 @@ class FilmStrip(QListWidget):
         event.accept()
 
 
+class PresetCombo(QComboBox):
+    """Combo de presets: se reconstruye (agrupado, con favoritos arriba)
+    justo antes de abrirse, asi siempre refleja la ultima estrella tocada."""
+
+    def __init__(self, rebuild_fn):
+        super().__init__()
+        self._rebuild_fn = rebuild_fn
+
+    def showPopup(self):
+        self._rebuild_fn()
+        super().showPopup()
+
+
 # ---------------------------------------------------------------- ventana
 
 
@@ -523,6 +611,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("LUT compare")
         self.resize(1280, 860)
         self.settings = QSettings("LeaB", "LutCompare")
+        raw_favs = self.settings.value("fav_presets", [])
+        if raw_favs is None:  # lista vacia guardada antes: QSettings la devuelve como None
+            raw_favs = []
+        elif isinstance(raw_favs, str):  # y una lista de 1 elemento, como str suelto
+            raw_favs = [raw_favs] if raw_favs else []
+        self.fav_presets = set(raw_favs)
+        self.presets_dir = Path(self.settings.value("presets_dir", str(PRESETS_DIR)))
+        if not self.presets_dir.is_dir():
+            self.presets_dir = PRESETS_DIR
 
         self.presets = []
         self.photos = []
@@ -534,6 +631,9 @@ class MainWindow(QMainWindow):
         self.zoom_cache_key = None
         self.workers = []
         self.thumb_worker = None
+        self.big_solo = None  # None = fundido; 0/1/2 = agrandar solo ese panel
+        self._preview_panels = self._preview_big = None
+        self._full_panels = self._full_big = None
 
         self.view_state = ViewState()
         self.preview_worker = PreviewWorker()
@@ -568,22 +668,43 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 15px; font-weight: 600;")
         self.file_label = QLabel("")
         self.file_label.setStyleSheet("color: gray;")
+        self.open_presets_btn = QPushButton("Abrir carpeta")
+        self.open_presets_btn.clicked.connect(self.open_presets_folder)
+        choose_presets_btn = QPushButton("Cambiar carpeta...")
+        choose_presets_btn.clicked.connect(self.choose_presets_folder)
         refresh = QPushButton("Releer presets")
         refresh.clicked.connect(self.reload_presets)
         top.addWidget(title)
         top.addWidget(self.file_label)
         top.addStretch(1)
+        top.addWidget(self.open_presets_btn)
+        top.addWidget(choose_presets_btn)
         top.addWidget(refresh)
         layout.addLayout(top)
+        self._update_presets_tooltip()
 
+        # nombres de los 3 tercios del fundido, ahora clickeables: eligen
+        # que se ve agrandado en la vista grande (fundido, o solo uno)
         names = QHBoxLayout()
-        self.zone_labels = []
-        for _ in range(3):
-            lab = QLabel("")
-            lab.setAlignment(Qt.AlignCenter)
-            lab.setStyleSheet("color: gray; font-size: 12px;")
-            names.addWidget(lab, 1)
-            self.zone_labels.append(lab)
+        self.big_mode_group = QButtonGroup(self)
+        self.big_mode_group.setExclusive(True)
+        fundido_btn = QPushButton("Fundido")
+        fundido_btn.setCheckable(True)
+        fundido_btn.setChecked(True)
+        fundido_btn.setFlat(True)
+        fundido_btn.setStyleSheet("font-size: 12px;")
+        self.big_mode_group.addButton(fundido_btn, BIG_FUNDIDO_ID)
+        names.addWidget(fundido_btn, 1)
+        self.zone_buttons = []
+        for i in range(3):
+            btn = QPushButton("")
+            btn.setCheckable(True)
+            btn.setFlat(True)
+            btn.setStyleSheet("font-size: 12px;")
+            self.big_mode_group.addButton(btn, i)
+            names.addWidget(btn, 1)
+            self.zone_buttons.append(btn)
+        self.big_mode_group.idClicked.connect(self.on_big_mode_changed)
         layout.addLayout(names)
 
         self.big_view = SyncView(self.view_state)
@@ -600,8 +721,11 @@ class MainWindow(QMainWindow):
         self.fade_slider.valueChanged.connect(self.on_fade_changed)
         self.hard_cut = QCheckBox("Corte neto")
         self.hard_cut.toggled.connect(self.on_fade_changed)
+        save_blend_btn = QPushButton("Guardar fundido")
+        save_blend_btn.clicked.connect(self.save_blend)
         fade_row.addWidget(self.fade_slider)
         fade_row.addWidget(self.hard_cut)
+        fade_row.addWidget(save_blend_btn)
         fade_row.addStretch(1)
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray;")
@@ -625,15 +749,39 @@ class MainWindow(QMainWindow):
             col.addWidget(view, 1)
             self.panel_views.append(view)
             if i == 0:
-                lab = QLabel("Original")
-                lab.setAlignment(Qt.AlignCenter)
-                col.addWidget(lab)
+                # combo deshabilitado en vez de una simple etiqueta: un
+                # QLabel mide bastante menos de alto que un QComboBox (17px
+                # vs 25px), y esa diferencia dejaba a este panel mas bajo
+                # que los otros dos -> la imagen de arriba se veia mas
+                # grande. Con el mismo tipo de widget, el alto calza.
+                original_combo = QComboBox()
+                original_combo.addItem("Original")
+                original_combo.setEnabled(False)
+                col.addWidget(original_combo)
                 self.panel_combos.append(None)
                 self.panel_sliders.append(None)
                 self.panel_slider_labels.append(None)
+                # fila fantasma (oculta, pero reserva su alto): sin ella a
+                # este panel le falta la fila "Intensidad" que tienen los
+                # otros dos, queda mas bajo, y la imagen ahi arriba (que
+                # llena el resto) se ve mas grande que las demas.
+                ghost = QWidget()
+                ghost_row = QHBoxLayout(ghost)
+                ghost_row.setContentsMargins(0, 0, 0, 0)
+                ghost_row.addWidget(QLabel("Intensidad"))
+                ghost_row.addWidget(QSlider(Qt.Horizontal), 1)
+                ghost_val = QLabel("100%")
+                ghost_val.setFixedWidth(38)
+                ghost_row.addWidget(ghost_val)
+                policy = ghost.sizePolicy()
+                policy.setRetainSizeWhenHidden(True)
+                ghost.setSizePolicy(policy)
+                ghost.hide()
+                col.addWidget(ghost)
             else:
-                combo = QComboBox()
+                combo = PresetCombo(lambda i=i: self._rebuild_preset_model(i))
                 combo.currentIndexChanged.connect(self.on_preset_changed)
+                combo.view().viewport().installEventFilter(self)
                 col.addWidget(combo)
                 self.panel_combos.append(combo)
                 srow = QHBoxLayout()
@@ -704,34 +852,121 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------- presets
 
+    def open_presets_folder(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.presets_dir)))
+
+    def choose_presets_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Elegir carpeta de presets", str(self.presets_dir))
+        if folder:
+            self.presets_dir = Path(folder)
+            self.settings.setValue("presets_dir", str(self.presets_dir))
+            self._update_presets_tooltip()
+            self.reload_presets()
+
+    def _update_presets_tooltip(self):
+        self.open_presets_btn.setToolTip(str(self.presets_dir))
+
     def reload_presets(self, startup=False):
-        self.presets, errors = load_presets(PRESETS_DIR)
+        self.presets, errors = load_presets(self.presets_dir)
         for i in (1, 2):
-            combo = self.panel_combos[i]
-            prev = combo.currentText() if combo.count() else self.settings.value(f"preset{i}", "")
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItem("(ninguno)")
-            for preset in self.presets:
-                combo.addItem(f"{preset.name}  [{preset.kind}]", preset.name)
-            idx = combo.findText(prev) if prev else -1
-            if idx < 0 and startup and len(self.presets) >= i:
-                idx = i  # por defecto: preset 1 y 2 de la lista
-            combo.setCurrentIndex(max(idx, 0))
-            combo.blockSignals(False)
+            self._rebuild_preset_model(i)
+        if startup:
+            for i in (1, 2):
+                combo = self.panel_combos[i]
+                if combo.currentData() is None and len(self.presets) >= i:
+                    idx = combo.findData(self.presets[i - 1].key)  # preset 1 y 2 de la lista
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
         if errors:
             self.status_label.setText("Presets con error: " + "; ".join(errors))
         self.on_preset_changed()
+
+    def _rebuild_preset_model(self, i):
+        """Reconstruye el modelo del combo i: (ninguno), Favoritos arriba,
+        despues cada carpeta con su subtitulo. Se llama al recargar presets
+        y de nuevo justo antes de abrir el desplegable (PresetCombo)."""
+        combo = self.panel_combos[i]
+        prev_key = combo.currentData() if combo.count() else self.settings.value(f"preset{i}", "")
+        model = QStandardItemModel(combo)
+
+        def add(text, key, header=False):
+            item = QStandardItem(text)
+            item.setData(key, Qt.UserRole)
+            if header:
+                item.setFlags(item.flags() & ~(Qt.ItemIsEnabled | Qt.ItemIsSelectable))
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+            model.appendRow(item)
+
+        add("(ninguno)", None)
+        favorites = [p for p in self.presets if p.key in self.fav_presets]
+        if favorites:
+            add("Favoritos", None, header=True)
+            for p in favorites:
+                add(f"{STAR_ON} {p.name}  [{p.kind}]", p.key)
+        last_group = None
+        for p in self.presets:
+            if p.group and p.group != last_group:
+                add(p.group, None, header=True)
+                last_group = p.group
+            star = STAR_ON if p.key in self.fav_presets else STAR_OFF
+            add(f"{star} {p.name}  [{p.kind}]", p.key)
+
+        combo.blockSignals(True)
+        combo.setModel(model)
+        idx = combo.findData(prev_key) if prev_key else -1
+        if idx < 0 and prev_key:
+            # compat con configs de una version anterior: guardaban el texto
+            # completo del combo ("nombre  [tipo]"), no la ruta relativa
+            legacy_name = str(prev_key).split("  [")[0]
+            old = next((p.key for p in self.presets if p.name == legacy_name), None)
+            idx = combo.findData(old) if old else -1
+        combo.setCurrentIndex(max(idx, 0))
+        combo.blockSignals(False)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.MouseButtonPress:
+            for i in (1, 2):
+                combo = self.panel_combos[i]
+                if combo is not None and obj is combo.view().viewport():
+                    index = combo.view().indexAt(event.position().toPoint())
+                    key = index.data(Qt.UserRole) if index.isValid() else None
+                    if key and event.position().x() < self._star_zone_width(combo):
+                        self._toggle_fav_preset(key)
+                        return True
+        return super().eventFilter(obj, event)
+
+    def _star_zone_width(self, combo):
+        return combo.view().fontMetrics().horizontalAdvance(STAR_ON + " ")
+
+    def _toggle_fav_preset(self, key):
+        if key in self.fav_presets:
+            self.fav_presets.discard(key)
+        else:
+            self.fav_presets.add(key)
+        self.settings.setValue("fav_presets", sorted(self.fav_presets))
+        # feedback inmediato en el desplegable abierto: solo cambia el icono,
+        # sin reordenar (eso pasa recien la proxima vez que se abre, ver
+        # PresetCombo.showPopup) para no reconstruir el modelo a mitad de un click
+        star = STAR_ON if key in self.fav_presets else STAR_OFF
+        for i in (1, 2):
+            model = self.panel_combos[i].model()
+            for row in range(model.rowCount()):
+                item = model.item(row)
+                if item.data(Qt.UserRole) == key:
+                    item.setText(star + item.text()[1:])
 
     def panel_preset(self, i):
         if i == 0:
             return None
         combo = self.panel_combos[i]
-        name = combo.currentData()
-        if not name:
+        key = combo.currentData()
+        if not key:
             return None
         for preset in self.presets:
-            if preset.name == name:
+            if preset.key == key:
                 return preset
         return None
 
@@ -846,8 +1081,9 @@ class MainWindow(QMainWindow):
 
     def set_photo(self, photo):
         self.current = photo
-        self.view_state.set(zoomed=False)
+        self.view_state.set(zoom=1.0)
         self.zoom_cache_key = None
+        self._full_panels = self._full_big = None
         for view in (*self.panel_views, self.big_view):
             view.set_full(None)
         total = len(self.visible)
@@ -873,17 +1109,17 @@ class MainWindow(QMainWindow):
     def on_fade_changed(self, *_args):
         self.zoom_cache_key = None
         self.big_view.set_full(None)
-        if self.view_state.zoomed:
+        if self.view_state.zoom > 1.0:
             self.request_zoom()
         self.schedule_preview()
 
     def on_preset_changed(self, *_args):
         for i in (1, 2):
             combo = self.panel_combos[i]
-            self.settings.setValue(f"preset{i}", combo.currentText())
-        self.zone_labels[0].setText("Original")
-        self.zone_labels[1].setText(self.panel_label(1))
-        self.zone_labels[2].setText(self.panel_label(2))
+            self.settings.setValue(f"preset{i}", combo.currentData())
+        self.zone_buttons[0].setText("Original")
+        self.zone_buttons[1].setText(self.panel_label(1))
+        self.zone_buttons[2].setText(self.panel_label(2))
         self.zoom_cache_key = None
         for view in (*self.panel_views, self.big_view):
             view.set_full(None)
@@ -895,8 +1131,8 @@ class MainWindow(QMainWindow):
         self.gen += 1
         self.settings.setValue("fade", self.fade_slider.value())
         fade = 0.0 if self.hard_cut.isChecked() else self.fade_slider.value() / 100.0
-        self.zone_labels[1].setText(self.panel_label(1))
-        self.zone_labels[2].setText(self.panel_label(2))
+        self.zone_buttons[1].setText(self.panel_label(1))
+        self.zone_buttons[2].setText(self.panel_label(2))
         self.status_label.setText("procesando...")
         neighbors = []
         if self.current in self.visible:
@@ -922,8 +1158,26 @@ class MainWindow(QMainWindow):
             return
         for view, arr in zip(self.panel_views, result["panels"]):
             view.set_preview(u8_to_qimage(arr))
-        self.big_view.set_preview(u8_to_qimage(result["big"]))
+        self._preview_panels, self._preview_big = result["panels"], result["big"]
+        self.big_view.set_preview(u8_to_qimage(self._big_source(full=False)))
         self.status_label.setText("")
+
+    def on_big_mode_changed(self, mode_id):
+        """Elegido en la fila de nombres: -1 = fundido, 0/1/2 = agrandar
+        solo ese panel (mas facil de juzgar el resultado que en el tercio
+        chico). No recalcula nada: reusa lo que ya se tenia renderizado."""
+        self.big_solo = None if mode_id == BIG_FUNDIDO_ID else mode_id
+        if self._preview_panels is not None:
+            self.big_view.set_preview(u8_to_qimage(self._big_source(full=False)))
+        if self._full_panels is not None:
+            self.big_view.set_full(u8_to_qimage(self._big_source(full=True)))
+
+    def _big_source(self, full):
+        panels = self._full_panels if full else self._preview_panels
+        big = self._full_big if full else self._preview_big
+        if self.big_solo is not None and panels is not None:
+            return panels[self.big_solo]
+        return big
 
     # -------------------------------------------------- zoom 100%
 
@@ -952,7 +1206,8 @@ class MainWindow(QMainWindow):
             return
         for view, arr in zip(self.panel_views, result["panels"]):
             view.set_full(u8_to_qimage(arr))
-        self.big_view.set_full(u8_to_qimage(result["big"]))
+        self._full_panels, self._full_big = result["panels"], result["big"]
+        self.big_view.set_full(u8_to_qimage(self._big_source(full=True)))
         self.status_label.setText("")
 
     # -------------------------------------------------- guardar / lote
@@ -969,6 +1224,26 @@ class MainWindow(QMainWindow):
         })
         worker.finished_ok.connect(
             lambda r: self.status_label.setText(f"guardada: {Path(r['dest']).name}"))
+        worker.failed.connect(self.on_worker_failed)
+        self._track(worker)
+        worker.start()
+
+    def save_blend(self):
+        """Guarda la vista grande tal cual se ve: el fundido en tercios entre
+        original y los 2 presets, a resolucion completa."""
+        if not self.current or not self.folder:
+            return
+        label = f"{self.panel_label(1)}+{self.panel_label(2)}_fundido"
+        self.status_label.setText("guardando fundido...")
+        worker = FullResWorker({
+            "kind": "blend_save", "photo": self.current, "folder": self.folder,
+            "presets": [self.panel_preset(1), self.panel_preset(2)],
+            "amounts": [self.panel_amount(1), self.panel_amount(2)],
+            "fade": 0.0 if self.hard_cut.isChecked() else self.fade_slider.value() / 100.0,
+            "label": label,
+        })
+        worker.finished_ok.connect(
+            lambda r: self.status_label.setText(f"guardado: {Path(r['dest']).name}"))
         worker.failed.connect(self.on_worker_failed)
         self._track(worker)
         worker.start()

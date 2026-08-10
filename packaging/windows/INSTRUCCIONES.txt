@@ -1,0 +1,23 @@
+LUT COMPARE — Windows
+======================
+
+INSTALAR
+--------
+1) Doble click en lut-compare-X.Y.Z.msi y seguir el asistente.
+   (Se instala solo para tu usuario; no pide administrador.)
+2) Al terminar la instalacion se abre sola una consola que instala
+   las dependencias (necesita internet y Python 3.10+; si falta
+   Python, se abre la pagina de descarga: marcar "Add python.exe
+   to PATH" al instalarlo).
+3) Las siguientes veces "LUT Compare" (menu inicio) arranca directo,
+   sin consolas.
+
+DESINSTALAR
+-----------
+Configuracion → Aplicaciones → LUT Compare → Desinstalar.
+(La carpeta venv de dependencias puede quedar en
+ %LocalAppData%\Programs\LUT Compare; se puede borrar a mano.)
+
+—
+LUT Compare · Leandro R. Bergero · MSc Finance & Banking (BSM-UPF)
+github.com/leabergero

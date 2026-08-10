@@ -15,3 +15,9 @@ presets/*.xmp
 # salidas y estado local
 editadas/
 .lut_compare.json
+
+# carpetas de staging intermedias al generar los instaladores
+# (los .deb/.msi/.pkg finales en installers/ SI se versionan)
+installers/.build-deb/
+installers/.build-msi/
+installers/.build-pkg/

@@ -452,18 +452,34 @@ class Preset:
 
 
 def load_presets(folder):
-    """Carga todos los .xmp y .cube de la carpeta. Devuelve (presets, errores)."""
+    """Carga todos los .xmp y .cube de la carpeta y sus subcarpetas (recursivo).
+
+    Cada preset queda con dos atributos extra:
+      .group  ruta de la subcarpeta relativa a `folder` ("" si esta en la raiz)
+      .key    ruta relativa completa, id estable para favoritos/seleccion
+              (evita choques entre presets con el mismo nombre en carpetas
+              distintas, cosa que .name solo ya no puede garantizar)
+
+    Devuelve (presets, errores), ordenados con la raiz primero y luego cada
+    subcarpeta agrupada.
+    """
     folder = Path(folder)
     presets, errors = [], []
     if not folder.is_dir():
         return presets, errors
-    for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
-        if path.suffix.lower() not in (".xmp", ".cube"):
-            continue
+    paths = sorted(
+        (p for p in folder.rglob("*") if p.suffix.lower() in (".xmp", ".cube")),
+        key=lambda p: (len(p.relative_to(folder).parts), str(p.relative_to(folder)).lower()),
+    )
+    for path in paths:
+        rel = path.relative_to(folder)
         try:
-            presets.append(Preset(path))
+            preset = Preset(path)
+            preset.group = "" if rel.parent == Path(".") else str(rel.parent)
+            preset.key = str(rel)
+            presets.append(preset)
         except Exception as exc:
-            errors.append(f"{path.name}: {exc}")
+            errors.append(f"{rel}: {exc}")
     return presets, errors
 
 
