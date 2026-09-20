@@ -76,7 +76,7 @@ def _presets_dir():
 PRESETS_DIR = _presets_dir()
 OUT_DIR_NAME = "editadas"
 FAVS_FILE = ".lut_compare.json"
-APP_VERSION = "1.2.0"  # debe coincidir con version= en setup.py
+APP_VERSION = "1.2.1"  # debe coincidir con version= en setup.py
 GITHUB_REPO = "leabergero/lut-compare"
 RAW_EXTS = {".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".raf", ".orf",
             ".rw2", ".pef", ".srw", ".x3f"}
