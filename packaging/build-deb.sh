@@ -42,6 +42,7 @@ Comment=Compara fotos con presets de Lightroom (.xmp) y LUTs (.cube)
 Comment[en]=Compare photos with Lightroom presets (.xmp) and LUTs (.cube)
 Exec=lut-compare
 Icon=lut-compare
+StartupWMClass=lut-compare
 Terminal=false
 Categories=Graphics;Photography;
 Keywords=lut;xmp;lightroom;fotografia;color;raw;

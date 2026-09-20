@@ -38,7 +38,7 @@ from PySide6.QtCore import (
     QEvent, QObject, QRectF, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
-    QDesktopServices, QImage, QKeySequence, QPainter, QPixmap, QShortcut,
+    QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap, QShortcut,
     QStandardItem, QStandardItemModel,
 )
 from PySide6.QtWidgets import (
@@ -76,7 +76,7 @@ def _presets_dir():
 PRESETS_DIR = _presets_dir()
 OUT_DIR_NAME = "editadas"
 FAVS_FILE = ".lut_compare.json"
-APP_VERSION = "1.2.2"  # debe coincidir con version= en setup.py
+APP_VERSION = "1.2.3"  # debe coincidir con version= en setup.py
 GITHUB_REPO = "leabergero/lut-compare"
 RAW_EXTS = {".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".raf", ".orf",
             ".rw2", ".pef", ".srw", ".x3f"}
@@ -1103,8 +1103,6 @@ class MainWindow(QMainWindow):
             row = self.visible.index(photo)
             item = self.strip.item(row)
             if item is not None:
-                from PySide6.QtGui import QIcon
-
                 item.setIcon(QIcon(QPixmap.fromImage(qimg)))
 
     def on_strip_row(self, row):
@@ -1387,6 +1385,13 @@ def main():
         idx = args.index("--selftest")
         selftest = args[idx + 1] if idx + 1 < len(args) else None
     app = QApplication(sys.argv)
+    app.setApplicationName("LUT Compare")
+    app.setDesktopFileName("lut-compare")  # matches lut-compare.desktop: icono/nombre correctos en Linux
+    icon_path = APP_DIR / "icon.png"
+    if not icon_path.is_file():
+        icon_path = Path(__file__).resolve().parent / "packaging" / "assets" / "icon.png"
+    if icon_path.is_file():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow(selftest_folder=selftest)
     window.show()
     if "--smoke" in args:
