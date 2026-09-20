@@ -13,6 +13,7 @@ import re
 import shutil
 import sys
 import traceback
+import urllib.request
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -75,6 +76,8 @@ def _presets_dir():
 PRESETS_DIR = _presets_dir()
 OUT_DIR_NAME = "editadas"
 FAVS_FILE = ".lut_compare.json"
+APP_VERSION = "1.2.0"  # debe coincidir con version= en setup.py
+GITHUB_REPO = "leabergero/lut-compare"
 RAW_EXTS = {".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".raf", ".orf",
             ".rw2", ".pef", ".srw", ".x3f"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp",
@@ -420,6 +423,28 @@ class ThumbWorker(QThread):
                 continue
 
 
+def _version_tuple(v):
+    return tuple(int(p) for p in re.findall(r"\d+", v)[:3])
+
+
+class UpdateChecker(QThread):
+    """Consulta el ultimo release de GitHub; sin red o sin release, no emite nada."""
+
+    found = Signal(str, str)  # version nueva, url de la release
+
+    def run(self):
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            latest = data.get("tag_name", "").lstrip("v")
+            if latest and _version_tuple(latest) > _version_tuple(APP_VERSION):
+                self.found.emit(latest, data.get("html_url", ""))
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------- vistas
 
 
@@ -648,6 +673,10 @@ class MainWindow(QMainWindow):
         self._shortcuts()
         self.reload_presets(startup=True)
 
+        self.update_checker = UpdateChecker()
+        self.update_checker.found.connect(self._on_update_found)
+        self.update_checker.start()
+
         last = self.settings.value("folder", "")
         if selftest_folder:
             QTimer.singleShot(400, lambda: self.set_folder(selftest_folder))
@@ -824,11 +853,15 @@ class MainWindow(QMainWindow):
         self.fav_button.clicked.connect(self.toggle_favorite)
         self.fav_filter = QCheckBox("Solo favoritas")
         self.fav_filter.toggled.connect(self.rebuild_strip)
+        self.update_label = QLabel("")
+        self.update_label.setOpenExternalLinks(True)
+        self.update_label.hide()
         browse_row.addWidget(browse)
         browse_row.addWidget(self.path_edit, 1)
         browse_row.addWidget(self.count_label)
         browse_row.addWidget(self.fav_button)
         browse_row.addWidget(self.fav_filter)
+        browse_row.addWidget(self.update_label)
         strip_col.addLayout(browse_row)
         self.strip = FilmStrip()
         self.strip.setViewMode(QListView.IconMode)
@@ -1068,6 +1101,12 @@ class MainWindow(QMainWindow):
         row = self.visible.index(self.current) + delta
         if 0 <= row < len(self.visible):
             self.strip.setCurrentRow(row)
+
+    def _on_update_found(self, version, url):
+        self.update_label.setText(
+            f'<a href="{url}">Version {version} disponible</a>' if url
+            else f"Version {version} disponible")
+        self.update_label.show()
 
     def toggle_favorite(self):
         if not self.current:
