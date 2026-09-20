@@ -1038,6 +1038,7 @@ class MainWindow(QMainWindow):
         self.count_label.setText(f"{len(self.visible)} fotos")
         if self.thumb_worker is not None:
             self.thumb_worker.cancelled = True
+            self.thumb_worker.wait(10000)
         self.thumb_worker = ThumbWorker(self.visible)
         self.thumb_worker.thumb.connect(self.on_thumb)
         self.thumb_worker.start()
