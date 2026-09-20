@@ -45,7 +45,7 @@ bdist_msi_options = {
 
 setup(
     name="LUT Compare",
-    version="1.2.1",
+    version="1.2.2",
     description="Compara fotos con presets de Lightroom (.xmp) y LUTs (.cube)",
     author="Lea",
     options={"build_exe": build_exe_options, "bdist_msi": bdist_msi_options},

@@ -76,7 +76,7 @@ def _presets_dir():
 PRESETS_DIR = _presets_dir()
 OUT_DIR_NAME = "editadas"
 FAVS_FILE = ".lut_compare.json"
-APP_VERSION = "1.2.1"  # debe coincidir con version= en setup.py
+APP_VERSION = "1.2.2"  # debe coincidir con version= en setup.py
 GITHUB_REPO = "leabergero/lut-compare"
 RAW_EXTS = {".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".raf", ".orf",
             ".rw2", ".pef", ".srw", ".x3f"}
@@ -853,6 +853,8 @@ class MainWindow(QMainWindow):
         self.fav_button.clicked.connect(self.toggle_favorite)
         self.fav_filter = QCheckBox("Solo favoritas")
         self.fav_filter.toggled.connect(self.rebuild_strip)
+        self.copy_fav_button = QPushButton("Copiar a FAVORITAS")
+        self.copy_fav_button.clicked.connect(self.copy_favorites)
         self.update_label = QLabel("")
         self.update_label.setOpenExternalLinks(True)
         self.update_label.hide()
@@ -861,6 +863,7 @@ class MainWindow(QMainWindow):
         browse_row.addWidget(self.count_label)
         browse_row.addWidget(self.fav_button)
         browse_row.addWidget(self.fav_filter)
+        browse_row.addWidget(self.copy_fav_button)
         browse_row.addWidget(self.update_label)
         strip_col.addLayout(browse_row)
         self.strip = FilmStrip()
@@ -1051,6 +1054,19 @@ class MainWindow(QMainWindow):
                 encoding="utf-8")
         except Exception:
             pass
+
+    def copy_favorites(self):
+        if not self.folder or not self.favorites:
+            QMessageBox.information(self, "Favoritas", "No hay fotos favoritas para copiar.")
+            return
+        dest = Path(self.folder) / "FAVORITAS"
+        dest.mkdir(exist_ok=True)
+        copied = 0
+        for photo in self.photos:
+            if Path(photo).name in self.favorites:
+                shutil.copy2(photo, dest / Path(photo).name)
+                copied += 1
+        QMessageBox.information(self, "Favoritas", f"{copied} fotos copiadas a {dest}")
 
     def rebuild_strip(self, _checked=False, select_first=False):
         if self.fav_filter.isChecked():
